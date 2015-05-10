@@ -1,0 +1,102 @@
+## Let's build some features!
+
+library('EBImage')
+library(adimpro)
+library(PET)
+
+## Specify your path to the training data
+train.path<-"Pathname"
+
+## Extract file names
+classnames<-list.files(path = train.path)
+filelist<-list()
+for(i in 1:length(classnames)){
+filelist[[i]]<-list.files(path=paste(train.path,classnames[[i]],sep =""))
+}
+names(filelist)<-classnames
+
+## Show size of each class
+classsizes<-as.numeric(lapply(filelist,length))
+propfirstk<-rep(0,121)
+  for(k in 1:121){propfirstk[k]<-1-sum(classsizes[order(classsizes)][1:k]/sum(classsizes))}
+
+## With plots
+df<-data.frame(factor(names(filelist)[order(classsizes)],levels=names(filelist)[order(classsizes)]),
+               classsizes[order(classsizes)],propfirstk)
+colnames(df)<-c("Class","Size","PropFirstK")
+qplot(data=df,x=Size,y=Class,main="Size of classes in train set")
+qplot(data=df,x=PropFirstK,y=Class,main="Cumulative proportion of the data contained in the k largest classes")
+
+## Show list of classes with number of images in each class
+data.frame(classnames,classsizes)
+
+## Read in image number "number" from class "class" -- specify class by its position in the alphabetized class list.
+spec.image<-function(class, number){
+image<-readImage(files = paste(train.path,classnames[[class]],"/",filelist[[class]][number],sep=""))
+}
+
+## Example:
+image(spec.image(41,31))
+View(spec.image(41,31))
+
+## Now the fun stuff!  Remember that in this scheme, white =1 and black =0.
+
+## Some things you can do with a an image:
+ex<-spec.image(115,32)
+image(ex)
+
+
+## Simple intensity thresholding
+
+bw0.5<-ex>0.5  ## darker than mid-gray becomes black, else white
+image(bw0.5)
+
+bw0.9<-ex>0.9  ## pixels darker than 10% gray become black, else black
+image(bw0.9)
+
+bwmean<-ex>mean(ex)  ## darker than average becomes black, else white
+image(bwmean)
+
+cutoff<-ifelse(ex<quantile(ex,0.1),ex,1) ## darkest 10% of pixels remain unchanged, rest become white
+image(cutoff)
+
+
+## Gaussian blurring
+
+gblur1<-gblur(ex,sigma = 1)
+gblur2<-gblur(ex,sigma = 2)
+gblur3<-gblur(ex,sigma = 5) ## larger sigma = more blur
+gblur.cutoff<-gblur3>mean(gblur3) ## thresholding after blurring
+
+par(mfrow=c(2,2))
+image(gblur1)
+image(gblur2)
+image(gblur3)
+image(gblur.cutoff)
+par(mfrow=c(1,1))
+
+## Image morphology
+
+dilate1<-dilate(ex)
+erode1<-erode(ex)
+ed<-erode(dilate(ex))
+de<-dilate(erode(ex)) 
+## dilation and erosion are not projective, and do not commute with each other.  
+## See "closing" and "opening" functions.
+diff<-erode1-dilate1
+
+par(mfrow=c(3,2))
+image(dilate1)
+image(erode1)
+image(ed)
+image(de)
+image(diff)
+par(mfrow=c(1,1))
+
+## Image gradients
+
+## Some premade features
+
+## Radon transforms
+
+## Much more to come
