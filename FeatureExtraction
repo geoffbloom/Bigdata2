@@ -1,102 +1,425 @@
-## Let's build some features!
+library("EBImage")
+library(data.table)
 
-library('EBImage')
-library(adimpro)
-library(PET)
+##feature extracting
+n_sample <- 5000
+f <- matrix(rep(0, 10000*189),ncol=189)
 
-## Specify your path to the training data
-train.path<-"Pathname"
+blur<-function(img)gblur(img,sigma=0.0075*sqrt(prod(dim(img))))
 
-## Extract file names
-classnames<-list.files(path = train.path)
-filelist<-list()
-for(i in 1:length(classnames)){
-filelist[[i]]<-list.files(path=paste(train.path,classnames[[i]],sep =""))
-}
-names(filelist)<-classnames
-
-## Show size of each class
-classsizes<-as.numeric(lapply(filelist,length))
-propfirstk<-rep(0,121)
-  for(k in 1:121){propfirstk[k]<-1-sum(classsizes[order(classsizes)][1:k]/sum(classsizes))}
-
-## With plots
-df<-data.frame(factor(names(filelist)[order(classsizes)],levels=names(filelist)[order(classsizes)]),
-               classsizes[order(classsizes)],propfirstk)
-colnames(df)<-c("Class","Size","PropFirstK")
-qplot(data=df,x=Size,y=Class,main="Size of classes in train set")
-qplot(data=df,x=PropFirstK,y=Class,main="Cumulative proportion of the data contained in the k largest classes")
-
-## Show list of classes with number of images in each class
-data.frame(classnames,classsizes)
-
-## Read in image number "number" from class "class" -- specify class by its position in the alphabetized class list.
-spec.image<-function(class, number){
-image<-readImage(files = paste(train.path,classnames[[class]],"/",filelist[[class]][number],sep=""))
+large_segments<-function(img){
+  segments<-bwlabel(img>mean(image))
+  table<-table(factor(segments))
+  sorttable<-sort(table[names(table)!="0"],decreasing=TRUE)
+  names<-as.numeric(names(sorttable))
+  blank<-matrix(0,nrow=dim(img)[1],ncol=dim(img)[2])
+  first<-second<-third<-blank
+  if(length(names)>=1){
+    first<-segments==names[1]
+    if(length(names)>=2){
+      second<-segments==names[2]
+      if(length(names)>=3){
+        third<-segments==names[3]
+      }
+    }
+  }
+  return(list(first,second,third))
 }
 
-## Example:
-image(spec.image(41,31))
-View(spec.image(41,31))
+uni_hist<-function(img,nbin=20){
+  colsums<-colSums(img)
+  breaks<-seq(0,1,length.out=nbin+1)
+  bars<-rep(0,nbin)
+  data<-as.vector(img)
+  for(i in 1:nbin){
+    bars[i]<-length(data[data>=breaks[i] & data<breaks[(i+1)]])/length(data)
+  }
+  return(bars)
+}
 
-## Now the fun stuff!  Remember that in this scheme, white =1 and black =0.
+## Projections and directional histograms
 
-## Some things you can do with a an image:
-ex<-spec.image(115,32)
-image(ex)
+## Breakmaker
+breakmaker<-function(img,nbin=10){
+  nbreaks<-nbin+1
+  dim<-dim(img)[2]
+  remainder<-dim-nbreaks*floor(dim/nbreaks)
+  permute<-sample(c(rep(1,remainder),rep(0,nbreaks-remainder)),nbreaks,replace = F)
+  binwidths<-rep(floor(dim/nbreaks),nbreaks)+permute
+  breaks<-c(1,rep(0,nbreaks))
+  k=0
+  for(i in seq(1,nbreaks)){
+    k<-breaks[i+1]<-k+binwidths[i]
+  }
+  return(breaks)
+}
+
+## Projection along the column axis
+projection<-function(img,nbin=10){
+  colsums<-colSums(img)
+  breaks<-breakmaker(img,nbin)
+  bars<-rep(0,nbin)
+  for(i in 1:nbin){
+    bars[i]<-mean(img[,breaks[i]:breaks[i+1]])
+  }
+  return(bars)
+}
+
+Haralick<-function(seg,img){as.numeric(computeFeatures.haralick(x=seg,ref=img))}
+
+blank<-function(img){matrix(1,nrow=dim(img)[1],ncol=dim(img)[2])}
+
+center_x<-function(segment,img){
+  computeFeatures.moment(x=segment,ref=img)[1,1]}
+
+center_y<-function(segment,img){
+  computeFeatures.moment(x=segment,ref=img)[1,2]}
+
+major_length<-function(segment,img){
+  computeFeatures.moment(x=segment,ref=img)[1,3]}
+
+eccentricity<-function(segment,img){
+  computeFeatures.moment(x=segment,ref=img)[1,4]}
+
+major_angle_deg<-function(segment,img){
+  (180/pi)*computeFeatures.moment(x=segment,ref=img)[1,5]}
 
 
-## Simple intensity thresholding
-
-bw0.5<-ex>0.5  ## darker than mid-gray becomes black, else white
-image(bw0.5)
-
-bw0.9<-ex>0.9  ## pixels darker than 10% gray become black, else black
-image(bw0.9)
-
-bwmean<-ex>mean(ex)  ## darker than average becomes black, else white
-image(bwmean)
-
-cutoff<-ifelse(ex<quantile(ex,0.1),ex,1) ## darkest 10% of pixels remain unchanged, rest become white
-image(cutoff)
 
 
-## Gaussian blurring
 
-gblur1<-gblur(ex,sigma = 1)
-gblur2<-gblur(ex,sigma = 2)
-gblur3<-gblur(ex,sigma = 5) ## larger sigma = more blur
-gblur.cutoff<-gblur3>mean(gblur3) ## thresholding after blurring
+rotator <- function(img, angle) {
+  major<-major_angle_deg(img>mean(img),blur(img))
+  y<-ceiling(center_y(img>mean(img),blur(img)))
+  x<-ceiling(center_x(img>mean(img),blur(img)))
+  small_edge_x<-2*max(x,(dim(img)[1]-x))
+  small_edge_y<-2*max(y,(dim(img)[2]-y))
+  small_box <- matrix(0,small_edge_x,small_edge_y)
+  if(x<(dim(img)[1]-x) &  y <(dim(img)[2]-y)){
+    img-> small_box[(small_edge_x-dim(img)[1]+1):small_edge_x,(small_edge_y-dim(img)[2]+1):small_edge_y]
+  } else if(x<(dim(img)[1]-x) &  y >= (dim(img)[2]-y)){
+    img->  small_box[(small_edge_x-dim(img)[1]+1):small_edge_x,1:(dim(img)[2])]
+  } else if(x>=(dim(img)[1]-x) &  y < (dim(img)[2]-y)){
+    img-> small_box[1:(dim(img)[1]),(small_edge_y-dim(img)[2]+1):small_edge_y ]
+  }  else if (x>=(dim(img)[1]-x) &  y >= (dim(img)[2]-y)){
+    img-> small_box[1:(dim(img)[1]),1:(dim(img)[2])]
+  }
+  big_edge <- floor(sqrt(small_edge_x^2+small_edge_y^2))
+  big_box <- matrix(0, nrow = big_edge, ncol = big_edge)
+  a<-((big_edge-small_edge_x)/2)
+  b<-((big_edge-small_edge_x)/2)+small_edge_x-1
+  c<-((big_edge-small_edge_y)/2)
+  d<-((big_edge-small_edge_y)/2)+small_edge_y-1
+  e<- small_box[seq(1,(b-a+1)),seq(1,(d-c+1))]
+  big_box[seq((a),(b)),seq((c),(d))]<-e
+  
+  rotated <- EBImage::rotate(big_box, angle =angle+major)
+  return(rotated)
+}
 
-par(mfrow=c(2,2))
-image(gblur1)
-image(gblur2)
-image(gblur3)
-image(gblur.cutoff)
-par(mfrow=c(1,1))
+## Directional histogram
+dir_hist<-function(img,nbin=10){
+  colsums<-colSums(img)
+  breaks<-seq(0,1,length.out=nbin+1)
+  bars<-rep(0,nbin)
+  for(i in 1:nbin){
+    bars[i]<-length(colsums[colsums>=breaks[i] & colsums<breaks[(i+1)]])/length(colsums)
+  }
+  return(bars)
+}
 
-## Image morphology
 
-dilate1<-dilate(ex)
-erode1<-erode(ex)
-ed<-erode(dilate(ex))
-de<-dilate(erode(ex)) 
-## dilation and erosion are not projective, and do not commute with each other.  
-## See "closing" and "opening" functions.
-diff<-erode1-dilate1
+dir_sum<-function(img){
+  mysummary<-function(x){c(min(x),mean(x),median(x),var(x),max(x))}
+  dir_summary<-mysummary(colSums(img))
+  return(dir_summary)
+}
+train_path <- "C:/Users/Casey/Documents/Spring 2015/ST 599/Projects/train"
+## train
+files_train<-function(){
+  all_class_files<-lapply(seq(1:121),class_files)
+  all_class_filenames<-as.vector(rep("0",30336))
+  all_class_labels<-as.vector(rep("0",30336))
+  nfiles<-rep(0,121)
+  k=1
+  for(i in seq(1:121)){
+    nfiles[i]<-all_class_files[i][[1]]$nfiles
+    all_class_filenames[k:(k+nfiles[i]-1)]<-all_class_files[i][[1]]$files
+    all_class_labels[k:(k+nfiles[i]-1)]<-rep(all_class_files[i][[1]]$classlabel,nfiles[i])
+    k=k+nfiles[i]
+  }
+  train<-data.table(all_class_filenames, all_class_labels)
+  setnames(train,c("all_class_filenames", "all_class_labels"),c("filename","classlabel"))
+  setkey(train,classlabel)
+  invisible(train)
+}
 
-par(mfrow=c(3,2))
-image(dilate1)
-image(erode1)
-image(ed)
-image(de)
-image(diff)
-par(mfrow=c(1,1))
+train<-files_train()
 
-## Image gradients
 
-## Some premade features
+## Extract test files
+setwd <- "C:/Users/bausellc/Desktop/test/"  ## no slash here
+test_filenames<-as.vector(list.files(setwd))
+test_filenames<-data.table(cbind(rep(setwd,length(test_filenames)),test_filenames))
+test_filenames<-within(test_filenames,id <- paste(V1,test_filenames,sep=""))$id
 
-## Radon transforms
+#loop
+#call in image
 
-## Much more to come
+for (i in 6095:10000){
+  
+  image <- readImage(test_filenames[i])
+  image <- abs(1-image)
+  
+  
+  f[i,1] <- dim(image)[1]
+  f[i,2] <- dim(image)[2]
+  f[i,3] <- mean(image)
+  f[i,4] <- sd(image)
+  f[i,5] <- median(image)
+  f[i,6] <- mean(image^4)
+  
+  
+  blur1 <- blur(image)
+  seg <- blur1>mean(image)
+  
+  shape <- computeFeatures.shape(seg)
+  moment <- computeFeatures.moment(seg,image)
+  f[i,7] <- shape[1]
+  f[i,8] <- shape[2]
+  f[i,9] <- shape[3]
+  f[i,10] <- shape[4]
+  f[i,11] <- shape[5]
+  f[i,12] <- shape[6]
+  f[i,13] <- moment[1]
+  f[i,14] <- moment[2]
+  f[i,15] <- moment[3]
+  f[i,16] <- moment[4]
+  f[i,17] <- moment[5]
+  
+  first <- large_segments(blur1)[[1]]
+  second <- large_segments(blur1)[[2]]
+  third <- large_segments(blur1)[[3]]
+  
+  shape1<- computeFeatures.shape(first)
+  shape2 <- ifelse(!isTRUE(all.equal(matrix(as.numeric(second),dim(image)[1]), 
+                                     matrix(0, dim(image)[1], dim(image)[2]))),
+                   computeFeatures.shape(second),
+                   0)
+  
+  shape3 <- ifelse(!isTRUE(all.equal(matrix(as.numeric(third),dim(image)[1]), 
+                                     matrix(0, dim(image)[1], dim(image)[2]))),
+                   computeFeatures.shape(third),
+                   0)
+  
+  f[i,18] <- shape1[1]
+  f[i,19] <- shape1[2]
+  f[i,20] <- shape1[3]
+  f[i,21] <- shape1[4]
+  f[i,22] <- shape1[5]
+  f[i,23] <- shape1[6]
+  f[i,24] <- shape2[1]
+  f[i,25] <- shape2[2]
+  f[i,26] <- shape2[3]
+  f[i,27] <- shape2[4]
+  f[i,28] <- shape2[5]
+  f[i,29] <- shape2[6]
+  f[i,30] <- shape3[1]
+  f[i,31] <- shape3[2]
+  f[i,32] <- shape3[3]
+  f[i,33] <- shape3[4]
+  f[i,34] <- shape3[5]
+  f[i,35] <- shape3[6]
+  f[i,36] <- f[i,24]/(shape1[1]+0.00001)
+  f[i,37] <- f[i,30]/(shape1[1]+0.00001)
+  f[i,38] <- mean(image^5)
+  f[i,39] <- mean(image^6)
+  f[i,40] <- mean(image^7)
+  f[i,41] <- mean(image^3)
+  moment1 <- computeFeatures.moment(first,image)
+  moment2 <- computeFeatures.moment(second,image)
+  moment3 <- computeFeatures.moment(third,image)
+  
+  dist_mat <- as.matrix(dist(matrix(c(moment1[1],moment1[2],moment2[1],moment2[2],moment3[1],moment3[2]),byrow = TRUE,ncol=2),diag=T,upper=T))
+  f[i,42] <- det(dist_mat)
+  
+  
+  center_scale <- rotator(image,0)
+  
+  forty_five <- rotator(image,45)
+  
+  
+  
+  cent <- projection(center_scale)
+  fort <- projection(forty_five)
+  ninet <- projection(t(center_scale))
+  one_thirt <- projection(t(forty_five))
+  
+  f[i,43] <- cent[1]
+  f[i,44] <- cent[2]
+  f[i,45] <- cent[3]
+  f[i,46] <- cent[4]
+  f[i,47] <- cent[5]
+  f[i,48] <- cent[6]
+  f[i,49] <- cent[7]
+  f[i,50] <- cent[8]
+  f[i,51] <- cent[9]
+  f[i,52] <- cent[10]
+  f[i,53] <- fort[1]
+  f[i,54] <- fort[2]
+  f[i,55] <- fort[3]
+  f[i,56] <- fort[4]
+  f[i,57] <- fort[5]
+  f[i,58] <- fort[6]
+  f[i,59] <- fort[7]
+  f[i,60] <- fort[8]
+  f[i,61] <- fort[9]
+  f[i,62] <- fort[10]
+  f[i,63] <- ninet[1]
+  f[i,64] <- ninet[2]
+  f[i,65] <- ninet[3]
+  f[i,66] <- ninet[4]
+  f[i,67] <- ninet[5]
+  f[i,68] <- ninet[6]
+  f[i,69] <- ninet[7]
+  f[i,70] <- ninet[8]
+  f[i,71] <- ninet[9]
+  f[i,72] <- ninet[10]
+  f[i,73] <- one_thirt[1]
+  f[i,74] <- one_thirt[2]
+  f[i,75] <- one_thirt[3]
+  f[i,76] <- one_thirt[4]
+  f[i,77] <- one_thirt[5]
+  f[i,78] <- one_thirt[6]
+  f[i,79] <- one_thirt[7]
+  f[i,80] <- one_thirt[8]
+  f[i,81] <- one_thirt[9]
+  f[i,82] <- one_thirt[10]
+  
+  f[i,83] <- max(bwlabel(blur1>mean(image)))
+  
+  center_hist <- dir_hist(center_scale)
+  forty_hist <- dir_hist(forty_five)
+  ninety_hist <- dir_hist(t(center_scale))
+  one_thirty_hist <- dir_hist(t(forty_five))
+  
+  f[i,84] <- center_hist[1]
+  f[i,85] <- center_hist[2]
+  f[i,86] <- center_hist[3]
+  f[i,87] <- center_hist[4]
+  f[i,88] <- center_hist[5]
+  f[i,89] <- center_hist[6]
+  f[i,90] <- center_hist[7]
+  f[i,91] <- center_hist[8]
+  f[i,92] <- center_hist[9]
+  f[i,93] <- center_hist[10]
+  f[i,94] <- forty_hist[1]
+  f[i,95] <- forty_hist[2]
+  f[i,96] <- forty_hist[3]
+  f[i,97] <- forty_hist[4]
+  f[i,98] <- forty_hist[5]
+  f[i,99] <- forty_hist[6]
+  f[i,100] <- forty_hist[7]
+  f[i,101] <- forty_hist[8]
+  f[i,102] <- forty_hist[9]
+  f[i,103] <- forty_hist[10]
+  f[i,104] <- ninety_hist[1]
+  f[i,105] <- ninety_hist[2]
+  f[i,106] <- ninety_hist[3]
+  f[i,107] <- ninety_hist[4]
+  f[i,108] <- ninety_hist[5]
+  f[i,109] <- ninety_hist[6]
+  f[i,110] <- ninety_hist[7]
+  f[i,111] <- ninety_hist[8]
+  f[i,112] <- ninety_hist[9]
+  f[i,113] <- ninety_hist[10]
+  f[i,114] <- one_thirty_hist[1]
+  f[i,115] <- one_thirty_hist[2]
+  f[i,116] <- one_thirty_hist[3]
+  f[i,117] <- one_thirty_hist[4]
+  f[i,118] <- one_thirty_hist[5]
+  f[i,119] <- one_thirty_hist[6]
+  f[i,120] <- one_thirty_hist[7]
+  f[i,121] <- one_thirty_hist[8]
+  f[i,122] <- one_thirty_hist[9]
+  f[i,123] <- one_thirty_hist[10]
+  
+  Hara <- Haralick(seg,image)
+  f[i,124] <- Hara[1]
+  f[i,125] <- Hara[2]
+  f[i,126] <- Hara[3]
+  f[i,127] <- Hara[4]
+  f[i,128] <- Hara[5]
+  f[i,129] <- Hara[6]
+  f[i,130] <- Hara[7]
+  f[i,131] <- Hara[8]
+  f[i,132] <- Hara[9]
+  f[i,133] <- Hara[10]
+  f[i,134] <- Hara[11]
+  f[i,135] <- Hara[12]
+  f[i,136] <- Hara[13]
+  f[i,137] <- Hara[14]
+  f[i,138] <- Hara[15]
+  f[i,139] <- Hara[16]
+  f[i,140] <- Hara[17]
+  f[i,141] <- Hara[18]
+  f[i,142] <- Hara[19]
+  f[i,143] <- Hara[20]
+  f[i,144] <- Hara[21]
+  f[i,145] <- Hara[22]
+  f[i,146] <- Hara[23]
+  f[i,147] <- Hara[24]
+  f[i,148] <- Hara[25]
+  f[i,149] <- Hara[26]
+  
+  cent_sum <- dir_sum(center_scale)
+  fort_sum <- dir_sum(forty_five)
+  ninet_sum <- dir_sum(t(center_scale))
+  one_thirty_sum <- dir_sum(t(forty_five))
+  
+  f[i,150] <- cent_sum[1]
+  f[i,151] <- cent_sum[2]
+  f[i,152] <- cent_sum[3]
+  f[i,153] <- cent_sum[4]
+  f[i,154] <- cent_sum[5]
+  f[i,155] <- fort_sum[1]
+  f[i,156] <- fort_sum[2]
+  f[i,157] <- fort_sum[3]
+  f[i,158] <- fort_sum[4]
+  f[i,159] <- fort_sum[5]
+  f[i,160] <- ninet_sum[1]
+  f[i,161] <- ninet_sum[2]
+  f[i,162] <- ninet_sum[3]
+  f[i,163] <- ninet_sum[4]
+  f[i,164] <- ninet_sum[5]
+  f[i,165] <- one_thirty_sum[1]
+  f[i,166] <- one_thirty_sum[2]
+  f[i,167] <- one_thirty_sum[3]
+  f[i,168] <- one_thirty_sum[4]
+  f[i,169] <- one_thirty_sum[5]
+  
+  uni <- uni_hist(image)
+  f[i,170] <- uni[1]
+  f[i,171] <- uni[2]
+  f[i,172] <- uni[3]
+  f[i,173] <- uni[4]
+  f[i,174] <- uni[5]
+  f[i,175] <- uni[6]
+  f[i,176] <- uni[7]
+  f[i,177] <- uni[8]
+  f[i,178] <- uni[9]
+  f[i,179] <- uni[10]
+  f[i,180] <- uni[11]
+  f[i,181] <- uni[12]
+  f[i,182] <- uni[13]
+  f[i,183] <- uni[14]
+  f[i,184] <- uni[15]
+  f[i,185] <- uni[16]
+  f[i,186] <- uni[17]
+  f[i,187] <- uni[18]
+  f[i,188] <- uni[19]
+  f[i,189] <- uni[20]
+  
+  print(paste("completed ",eval(i)," of", eval(n_sample)))
+}
+
